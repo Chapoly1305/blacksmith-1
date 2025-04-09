@@ -9,6 +9,7 @@
 #include <string>
 #include <fstream>
 #include <memory>
+#include <streambuf>
 
 template<typename ... Args>
 std::string format_string(const std::string &format, Args ... args) {
@@ -23,8 +24,27 @@ class Logger {
  private:
   Logger();
 
-  // a reference to the file output stream associated to the logfile
+  // Custom stream buffer for line-buffered behavior
+  class LineBufferedStreamBuf : public std::streambuf {
+      std::streambuf *original_buf;
+
+  protected:
+      int overflow(int ch) override {
+          if (ch == '\n') {
+              original_buf->sputc(ch);  // Write newline
+              original_buf->pubsync(); // Flush
+          } else {
+              original_buf->sputc(ch);  // Write character
+          }
+          return ch;
+      }
+
+  public:
+      explicit LineBufferedStreamBuf(std::streambuf *buf) : original_buf(buf) {}
+  };
+
   std::ofstream logfile;
+  LineBufferedStreamBuf *line_buffered_buf = nullptr;
 
   // the logger instance (a singleton)
   static Logger instance;
