@@ -140,68 +140,46 @@ void ReplayingHammerer::replay_patterns(const std::string& json_filename,
     // ::: We report how often we needed to retry the pattern and how long it takes to trigger them on average (time).
     // :::::::::::::::::::::::::::::::::::::::::::::::::::::
 
-    const size_t ROUNDS_WITH_BITFLIPS_GOAL = 10;
-    size_t rounds_with_bitflips = 0;
-
-    const int MAX_RETRIES = 1000;
-    int cur_try = 0;
+    const size_t FIXED_TOTAL_TRIES = 100;
 
     Logger::log_analysis_stage("Repeatability experiment");
-
-    // do repeatability experiment to see how well repeatable bit flips are
+    
     struct RepeatabilityData rep_data{
-      .pattern_id = patt.instance_id,
-      .mapping_id = mapper.get_instance_id(),
-      .total_tries = 0,
-      .total_time_us = 0,
-      .retries_per_round = std::vector<size_t>(),
-      .time_per_round_us = std::vector<size_t>(),
-      .bitflips_per_round = std::vector<size_t>()
+        .pattern_id = patt.instance_id,
+        .mapping_id = mapper.get_instance_id(),
+        .total_tries = 0,
+        .total_time_us = 0,
+        .retries_per_round = std::vector<size_t>(),
+        .time_per_round_us = std::vector<size_t>(),
+        .bitflips_per_round = std::vector<size_t>()
     };
-
+    
     std::vector<volatile char *> random_rows = mapper.get_random_nonaccessed_rows(params.get_max_row_no());
-
-    Logger::log_data("ROUND\tTRY\t#BIT_FLIPS");
-    while (rounds_with_bitflips++ < ROUNDS_WITH_BITFLIPS_GOAL) {
-
-      bool success = false;
-      int64_t time_start_us = get_timestamp_us();
-
-      cur_try = 0;
-      while (cur_try++ < MAX_RETRIES && !success) {
+    
+    Logger::log_data("TRY\t#BIT_FLIPS");
+    
+    for (size_t try_idx = 1; try_idx <= FIXED_TOTAL_TRIES; ++try_idx) {
+        int64_t time_start_us = get_timestamp_us();
+    
         // hammer the pattern
         CodeJitter &jitter = mapper.get_code_jitter();
-        auto num_bitflips = hammer_pattern(params,jitter,patt,mapper, jitter.flushing_strategy,
-            jitter.fencing_strategy, 1, jitter.num_aggs_for_sync, jitter.total_activations,
+        auto num_bitflips = hammer_pattern(params, jitter, patt, mapper,
+            jitter.flushing_strategy, jitter.fencing_strategy,
+            1, jitter.num_aggs_for_sync, jitter.total_activations,
             false, jitter.pattern_sync_each_ref, false, false, false,
-            false,true);
-
-        success = (num_bitflips > 0);
-        Logger::log_data(format_string("%ld\t%ld\t%lu", rounds_with_bitflips, cur_try, num_bitflips));
-
-        if (success || cur_try == MAX_RETRIES) {
-          int64_t elapsed_time_us = get_timestamp_us() - time_start_us;
-
-          rep_data.total_tries += cur_try;
-          rep_data.total_time_us += elapsed_time_us;
-
-          rep_data.retries_per_round.push_back(cur_try);
-          rep_data.time_per_round_us.push_back(elapsed_time_us);
-          rep_data.bitflips_per_round.push_back(num_bitflips);
-
-          break;
-        }
-
-        // wait a bit before retrying
-        const auto start = get_timestamp_us();
-        auto current = get_timestamp_us();
-        const auto wait_limit = Range<int>(0, 1000).get_random_number(gen);
-        while (current-start < wait_limit) {
-          // random workload
-          current = get_timestamp_us();
-        }
-      }
+            false, true);
+    
+        int64_t elapsed_time_us = get_timestamp_us() - time_start_us;
+    
+        rep_data.total_tries++;
+        rep_data.total_time_us += elapsed_time_us;
+        rep_data.retries_per_round.push_back(1);  // always 1 try per round
+        rep_data.time_per_round_us.push_back(elapsed_time_us);
+        rep_data.bitflips_per_round.push_back(num_bitflips);
+    
+        Logger::log_data(format_string("%lu\t%lu", try_idx, num_bitflips));
     }
+    
 
 #ifdef ENABLE_JSON
     nlohmann::json meta;
@@ -215,9 +193,14 @@ void ReplayingHammerer::replay_patterns(const std::string& json_filename,
     experiment["mapping_id"] = rep_data.mapping_id;
     experiment["total_tries"] = rep_data.total_tries;
     experiment["total_time_us"] = rep_data.total_time_us;
-    experiment["retries_per_round"] = rep_data.retries_per_round;
-    experiment["time_per_round_us"] = rep_data.time_per_round_us;
-    experiment["bitflips_per_round"] = rep_data.bitflips_per_round;
+    experiment["bitflips_per_try"] = rep_data.bitflips_per_round; // new key name
+    experiment["time_per_try_us"] = rep_data.time_per_round_us;   // new key name
+    experiment["reproducibility_rate"] = static_cast<double>(
+        std::count_if(rep_data.bitflips_per_round.begin(),
+                      rep_data.bitflips_per_round.end(),
+                      [](auto b) { return b > 0; })
+    ) / FIXED_TOTAL_TRIES;
+    
 
     nlohmann::json root;
     root["metadata"] = meta;
