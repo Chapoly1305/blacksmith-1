@@ -1,4 +1,5 @@
 #include "Utilities/Logger.hpp"
+#include <cstring>
 
 #include <iostream>
 #include <GlobalDefines.hpp>
@@ -9,13 +10,25 @@ Logger Logger::instance; /* NOLINT */
 Logger::Logger() = default;
 
 void Logger::initialize() {
-  instance.logfile = std::ofstream();
+  try {
+      instance.logfile = std::ofstream("stdout.log", std::ios::out | std::ios::trunc);
+      if (!instance.logfile.is_open()) {
+          std::cerr << "Failed to open logfile: " << strerror(errno) << std::endl;
+          exit(1);
+      }
 
-  std::string logfile_filename = "stdout.log";
-  std::cout << "Writing into logfile " FF_BOLD << logfile_filename << F_RESET << std::endl;
-  // we need to open the log file in append mode because the run_benchmark script writes values into it
-  instance.logfile.open(logfile_filename, std::ios::out | std::ios::app);
-  instance.timestamp_start = (unsigned long) time(nullptr);
+      // Wrap the original stream buffer with LineBufferedStreamBuf
+      instance.line_buffered_buf = new LineBufferedStreamBuf(instance.logfile.rdbuf());
+
+      // Redirect the ofstream to use our custom buffer
+      instance.logfile.basic_ios<char>::rdbuf(instance.line_buffered_buf);
+
+      instance.timestamp_start = (unsigned long)time(nullptr);
+      std::cout << "Logger initialized successfully" << std::endl;
+  } catch (const std::exception &e) {
+      std::cerr << "Exception during logger init: " << e.what() << std::endl;
+      exit(1);
+  }
 }
 
 void Logger::close() {
@@ -24,6 +37,10 @@ void Logger::close() {
 }
 
 void Logger::log_info(const std::string &message, bool newline) {
+  if (!instance.logfile.is_open()) {
+      std::cerr << "Logfile not open!" << std::endl;
+      return;
+  }
   instance.logfile << FC_CYAN "[+] " << message;
   instance.logfile << F_RESET;
   if (newline) instance.logfile << "\n";
